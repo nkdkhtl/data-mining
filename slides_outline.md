@@ -2,15 +2,15 @@
 
 ## Slide 1 - Bài toán và ba quyết định chính
 
-- **Bối cảnh & Dữ liệu**:
-  - Toàn bộ dữ liệu lấy từ nguồn duy nhất `Chapter_4/data` (manifest metadata và các replay JSON mô phỏng Kaggriculture).
-  - Hợp nhất manifest đa nguồn theo ngày crawl với replay JSON: 667 episode, mẫu benchmark 300 replay, trích xuất 432.000 lượt đấu (turn) và 529.922 lệnh thị trường (market orders).
+- **Bối cảnh & Dữ liệu thực tế**:
+  - Dữ liệu thu thập từ nguồn duy nhất `Chapter_4/data`: Tệp `manifest.csv` gồm 667 episode và 667 tệp replay JSON mô phỏng Kaggriculture.
+  - Phạm vi thực thi: Pipeline xử lý mẫu benchmark 300 replay JSON để kiểm thử hiệu năng xử lý big data, trích xuất 432.000 lượt đấu (turn-level) và 529.922 lệnh thị trường (market orders).
 - **Mục tiêu**:
-  - Không chỉ tạo bảng dữ liệu phẳng, mà phải bảo toàn danh tính trận đấu, ngăn chặn rò rỉ thông tin theo thời gian và phân loại chính xác bản chất bất thường.
+  - Xây dựng pipeline tự động hóa có thể tái sử dụng, giải quyết các vấn đề đặc trưng của dữ liệu crawl thực tế: đa nguồn theo ngày, đa phiên bản engine, đa cấu hình game và dữ liệu thiếu có cấu trúc.
 - **Ba quyết định kiến trúc cốt lõi**:
-  1. Hợp nhất bằng khóa nghiệp vụ `episode_id`, kiên quyết loại bỏ UUID `id`.
-  2. Khử trùng lặp qua thời gian: Giữ bản ghi crawl mới nhất kèm theo vết lịch sử `first_seen_date` / `last_seen_date`.
-  3. Tách biệt hoàn toàn lỗi kỹ thuật / thiếu nguồn khỏi ngoại lai thống kê; không biến missing thành zero và không can thiệp thô bạo vào hành vi thị trường.
+  1. Hợp nhất bằng khóa nghiệp vụ `episode_id`, loại bỏ hoàn toàn UUID `id`.
+  2. Khử trùng lặp qua thời gian: Giữ bản ghi crawl mới nhất, lưu vết `first_seen_date`/`last_seen_date` để chống rò rỉ dữ liệu (Data Leakage).
+  3. Phân tách rạch ròi lỗi kỹ thuật khỏi ngoại lai thống kê; bảo toàn ngữ nghĩa gốc (không biến missing thành zero).
 
 ---
 
@@ -19,71 +19,77 @@
 - **Thực trạng dữ liệu**: Mỗi tệp JSON replay chứa hai mã định danh: `id` (chuỗi UUID nội bộ của lần export) và `info.EpisodeId` (số nguyên định danh trận đấu).
 - **Chứng minh khóa chuẩn**:
   - `episode_id = filename stem = info.EpisodeId = manifest.episode_id`.
-  - Tỷ lệ đối chiếu chéo 3 phía đạt 100% khớp (0 mismatch).
+  - Tỷ lệ đối chiếu chéo 3 phía đạt 100% khớp (0 mismatch trên toàn bộ dữ liệu).
 - **Lý do loại bỏ UUID `id`**:
-  - `id` chỉ là UUID cục bộ của lượt chạy, thay đổi qua các lần crawl lại và hoàn toàn không tồn tại trong `manifest.csv`. Sử dụng `id` sẽ gây lệch khóa 100% khi join đa nguồn.
-- **Ý nghĩa**: Khóa nghiệp vụ ổn định giúp loại bỏ triệt để nguy cơ join nhầm trận, nhân bản lượt đấu và làm sai lệch toàn bộ phân tích hạ nguồn.
+  - `id` chỉ là UUID cục bộ của lượt chạy, thay đổi qua các lần export lại và hoàn toàn không tồn tại trong `manifest.csv`. Dùng UUID `id` sẽ gây lệch khóa 100%.
+- **Ý nghĩa**: Khóa nghiệp vụ ổn định giúp tránh join sai trận, tránh nhân đôi số lượt đấu và bảo đảm tính toàn vẹn cho mọi phân tích hạ nguồn.
 
 ---
 
-## Slide 3 - Quyết định 2: Giữ bản mới nhất, lưu lịch sử crawl để tránh Leakage
+## Slide 3 - Quyết định 2: Chiến lược De-duplicate qua thời gian & Chống Leakage
 
-- **Thách thức**: Khi crawl dữ liệu theo ngày, các episode xuất hiện lặp lại ở nhiều tệp manifest (1.334 dòng manifest thô từ 2 ngày crawl).
-- **Giải pháp xử lý**:
-  - Với các bản ghi trùng `episode_id`, chọn bản ghi có `create_time` mới nhất làm đại diện cho phân tích.
-  - Bổ sung các cột truy vết lịch sử: `first_seen_date`, `last_seen_date`, `manifest_occurrences` (số lần xuất hiện), `source_count`.
+- **Thách thức từ dữ liệu crawl theo ngày**:
+  - Khi hệ thống crawler chạy định kỳ, dataset công bố theo ngày khiến cùng một `episode_id` có thể xuất hiện lặp lại ở nhiều tệp manifest.
+- **Thiết kế cơ chế De-duplicate trong Pipeline**:
+  - Hợp nhất linh hoạt danh sách manifest từ nhiều đợt crawl khác nhau.
+  - Gom nhóm theo `episode_id`: Giữ bản ghi có `create_time` mới nhất làm đại diện cho phân tích hạ nguồn.
+  - Bổ sung các cột truy vết lịch sử: `first_seen_date`, `last_seen_date`, `manifest_occurrences`, `source_count`.
 - **Kiểm soát Data Leakage**:
-  - Phân tích theo chuỗi thời gian chỉ được phép dùng thông tin xuất hiện tại thời điểm crawl đó, không được lấy thông tin của tương lai gán ngược cho quá khứ.
-  - 100% bản ghi trùng lặp bị loại được ghi vào `duplicate_trace.csv` để đảm bảo tính minh bạch và khả năng tái lập.
+  - Phân tích theo chuỗi thời gian chỉ được phép dùng thông tin xuất hiện tại thời điểm crawl đó, không lấy thông tin tương lai gán ngược cho quá khứ.
+  - Lưu vết 100% các bản ghi trùng lặp bị loại vào `duplicate_trace.csv` để đảm bảo tính minh bạch.
 
 ---
 
-## Slide 4 - Quyết định 3: Phân loại lỗi kỹ thuật và Outlier thống kê
+## Slide 4 - Quyết định 2 (tiếp): Đa phiên bản Engine & Đa cấu hình Game
 
+- **Đa phiên bản Engine (Self-describing Specification)**:
+  - Replay JSON tự mang schema trong khối `specification`.
+  - Pipeline băm mã SHA-256 (`schema_signature_hash`) trên canonical JSON để kiểm soát toàn vẹn.
+  - Tự động phát hiện trôi dạt schema (schema drift) giữa các version engine mà không cần hard-code bảng ánh xạ cột.
 - **Đa cấu hình game (`configuration`)**:
-  - `startingMoney` và `episodeSteps` là các tham số môi trường hợp lệ, không phải lỗi.
-  - So sánh trực tiếp điểm số giữa các trận khác vốn/bước là vô nghĩa. Pipeline đề xuất phân tầng (Stratification) hoặc chuẩn hóa theo tỷ suất tích lũy trên mỗi lượt (`normalized_score_per_step`).
-- **Phân tách hai nhóm bất thường**:
-  - *Lỗi kỹ thuật / Thiếu nguồn*: Mismatch quan hệ điểm ($|\text{sum} - \text{avg} \times 2| > 0.1$), thiếu file replay JSON (367 episode), lệch số bước hoặc số tác nhân.
-  - *Outlier thống kê*: Giá trị nằm ngoài phân vị 1% - 99% của `avg_score`, `size_bytes` hoặc `actual_steps`.
-- **Kết quả thực nghiệm**:
-  - Có 24 outlier thống kê; 0 trường hợp chỉ bị cờ thống kê (`stat_only = 0`).
-  - Rule-based là chốt chặn bắt buộc cho tính toàn vẹn (integrity); Thống kê chỉ đóng vai trò cảnh báo giá trị cực đoan, không được tự ý xóa dữ liệu.
+  - *Câu hỏi:* Hai episode khác nhau về `startingMoney` (vốn ban đầu) hoặc `episodeSteps` (số bước chơi), so sánh trực tiếp điểm số có còn ý nghĩa không?
+  - *Khẳng định:* **KHÔNG CÒN Ý NGHĨA.** Vốn ban đầu lớn hơn và số bước dài hơn tạo đòn bẩy tích lũy tài sản cơ học, không phản ánh năng lực thuật toán.
+  - *Giải pháp chuẩn hóa:*
+    1. Phân tầng (Stratified Comparison): Chỉ so sánh trong cùng nhóm cấu hình.
+    2. Chuẩn hóa tỷ suất tích lũy ròng trên mỗi lượt (Normalized Score Rate):
+       $$\text{Score Rate} = \frac{\text{sum\_score} - (\text{agent\_count} \times \text{startingMoney})}{\text{episodeSteps} \times \text{agent\_count}}$$
 
 ---
 
-## Slide 5 - Không biến missing thành zero, không xóa hành vi thị trường
+## Slide 5 - Quyết định 3: Bắt lỗi kép & Xử lý Structured Missingness
 
-- **Nguyên tắc bảo toàn ngữ nghĩa**:
-  - Tuyệt đối không impute `reward = null` thành `0`: Null phản ánh lỗi kỹ thuật (`ERROR`/`TIMEOUT`), còn 0 là kết quả thi đấu thực tế.
-  - Action mặc định `PASS` và reward `0` là các giá trị hợp lệ trong chiến thuật chơi Kaggriculture, được gắn cờ nhận diện chứ không xem là lỗi.
-- **Bảo toàn lệnh thị trường (Market Orders)**:
-  - Các thao tác như `HIRE` hay `BUY_LAND` không mang tham số số lượng được phân loại riêng qua `quantity_is_numeric = False`, không ép kiểu hoặc gán giá trị 0 giả tạo.
-- **Shared Observation Mismatch**:
-  - 216.000 cặp lượt đấu bị lệch 1 step ở trường `observation.step` do cơ chế ghi log tuần tự của game engine. Lỗi này được ghi nhận riêng vào `shared_checks.csv` mà không tự ý impute làm biến dạng dữ liệu gốc.
+- **Rule-based vs Thống kê (Quantile 1% - 99%)**:
+  - Rule-based kiểm tra quan hệ toán học ($|\text{sum} - \text{avg} \times 2| > 0.1$), tính toàn vẹn agent count, status count và số bước.
+  - Kết quả đối chiếu: Thống kê bỏ sót các lỗi quan hệ điểm số vì điểm sai lệch vẫn nằm gần trung vị (median).
+  - *Kết luận:* Rule-based là chốt chặn bắt buộc cho tính toàn vẹn (integrity); Thống kê chỉ đóng vai trò cảnh báo hành vi cực đoan, không được tự ý xóa dữ liệu.
+- **Nguyên tắc bảo toàn ngữ nghĩa (Structured Missingness)**:
+  - Tuyệt đối không impute `reward = null` thành `0`: Null là lỗi sập hệ thống (`ERROR`/`TIMEOUT`), 0 là kết quả thi đấu hợp lệ.
+  - Bảo toàn hành vi chiến thuật `PASS` (`is_default_pass = True`).
+  - Phân loại riêng các lệnh thị trường không có số lượng (`HIRE`, `BUY_LAND` mang `quantity_is_numeric = False`), không ép kiểu hay gán số lượng giả.
+  - Với các episode chưa đồng bộ replay JSON trong lượt chạy mẫu, pipeline tự động gắn cờ `json_available = False`, giữ trong bảng audit cấp episode chứ không làm gián đoạn hệ thống.
 
 ---
 
 ## Slide 6 - Traceability và Tác động Downstream
 
 - **Ma trận truy vết (`traceability.csv`)**:
-  - Toàn bộ 4.016 lượt gắn cờ và quyết định loại bỏ đều được lưu vết chi tiết theo từng cấp độ (`episode`/`manifest`), nêu rõ lý do và bảo đảm tính khả nghịch (`reversible = True`).
-- **Xử lý thiếu nguồn**:
-  - 367 episode thiếu replay JSON được lưu giữ trong bảng audit cấp episode, chỉ loại khỏi phân tích cấp lượt (turn-level).
-- **Đánh giá tác động lên xếp hạng Downstream**:
-  - So sánh thứ hạng `avg_score` trước và sau làm sạch trên 300 episode có replay JSON.
-  - Kết quả: **0 thứ hạng bị thay đổi (`rank_changed = 0`)**.
-  - Kết luận: Pipeline làm sạch loại bỏ dữ liệu hỏng mà không bóp méo hay thiên vị bất kỳ thực thể nào trong kết quả phân tích.
+  - Lưu vết chi tiết toàn bộ quyết định gắn cờ và phân loại theo từng cấp độ (`manifest` / `episode`).
+  - Cam kết `reversible = True` trên 100% bản ghi: Dữ liệu gốc được bảo toàn nguyên vẹn, mọi quyết định đều có thể hoàn nguyên khi cần kiểm toán lại.
+- **Đánh giá tác động Downstream (`ranking_impact.csv`)**:
+  - Bài toán kiểm chứng: So sánh xếp hạng `avg_score` trước và sau làm sạch trên 300 episode mẫu có replay JSON đầy đủ.
+  - Kết quả thực nghiệm: **0 thứ hạng bị thay đổi (`rank_changed = False` trên 100% bản ghi)**.
+  - Ý nghĩa: Quy trình làm sạch loại bỏ dữ liệu bất thường mà không tạo ra bất kỳ sự xáo trộn hay thiên vị giả tạo nào trong bảng xếp hạng.
 
 ---
 
 ## Slide 7 - Kết luận và Sản phẩm bàn giao
 
-- **Kiến trúc có thể tái sử dụng (Reusable Architecture)**:
-  - Module `pipeline.py` hoàn chỉnh, độc lập hoàn toàn, hỗ trợ CLI, sẵn sàng áp dụng tự động cho các đợt crawl dữ liệu ngày mới.
-- **Sản phẩm bàn giao**:
-  1. Mã nguồn module hóa: `pipeline.py` (chuẩn PEP8, hỗ trợ tham số CLI).
-  2. Bảng dữ liệu sạch & Audit: `output/` định dạng Parquet và CSV tốc độ cao.
-  3. Báo cáo chất lượng dữ liệu: `data_quality_report.md` chi tiết và đầy đủ bảng biểu.
-  4. Notebook trực quan: `Bai_3_pipeline.ipynb` minh họa trực quan từng bước xử lý.
-  5. Slide báo cáo: `slides_outline.md` tóm tắt súc tích trong 5-7 phút.
+- **Ba nguyên tắc bảo đảm của Pipeline**:
+  1. **Đúng đắn:** Khóa join chuẩn xác, chống nhân đôi dữ liệu và chặn đứng Data Leakage.
+  2. **Bảo toàn:** Giữ nguyên ngữ nghĩa dữ liệu gốc, tách bạch lỗi kỹ thuật với chiến thuật chơi.
+  3. **Tái sử dụng:** Tự động phát hiện schema drift, sẵn sàng xử lý dữ liệu crawl ngày mới qua 1 dòng lệnh CLI.
+- **Bộ sản phẩm bàn giao trong `Chapter_4/Bai_3/`**:
+  * `pipeline.py`: Mã nguồn module hóa chuẩn PEP8, hỗ trợ CLI độc lập.
+  * `Bai_3_pipeline.ipynb`: Notebook trình diễn trực quan kèm mã chạy kiểm chứng.
+  * `data_quality_report.md`: Báo cáo chất lượng dữ liệu chi tiết đầy đủ bảng số liệu.
+  * `output/`: Bộ dữ liệu sạch xuất khẩu kép (CSV & Parquet nén tối ưu).
