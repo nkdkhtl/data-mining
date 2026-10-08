@@ -1,0 +1,8 @@
+stage,count
+raw_manifest_rows,1334
+deduplicated_manifest_rows,667
+json_episode_rows,300
+turn_rows,432000
+market_order_rows,529922
+clean_episode_rows,300
+traceability_rows,3426
